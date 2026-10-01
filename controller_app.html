@@ -1,0 +1,982 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ESP32 Rover — Dual Speedometer, RC & Diagnostics</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #07090e;
+            --surface: rgba(16, 22, 34, 0.78);
+            --surface-elevated: rgba(23, 31, 48, 0.88);
+            --border: rgba(60, 75, 105, 0.35);
+            --blue: #3b82f6;
+            --cyan: #06b6d4;
+            --green: #10b981;
+            --amber: #f59e0b;
+            --red: #ef4444;
+            --purple: #8b5cf6;
+            --pink: #ec4899;
+            --text: #f1f5f9;
+            --text-muted: #94a3b8;
+            --text-dim: #64748b;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-tap-highlight-color: transparent; }
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: var(--bg);
+            background-image: 
+                radial-gradient(circle at 15% 15%, rgba(59, 130, 246, 0.08) 0%, transparent 40%),
+                radial-gradient(circle at 85% 85%, rgba(6, 182, 212, 0.06) 0%, transparent 40%);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 16px 14px 40px;
+        }
+
+        .app { max-width: 520px; margin: 0 auto; }
+
+        /* Header */
+        .header { text-align: center; margin-bottom: 18px; }
+        .header h1 {
+            font-size: 1.55rem;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            background: linear-gradient(135deg, #60a5fa 10%, #06b6d4 50%, #34d399 90%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .header p { font-size: 0.75rem; color: var(--text-dim); margin-top: 2px; }
+        
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            padding: 5px 14px;
+            border-radius: 99px;
+            font-size: 0.72rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 10px;
+            transition: all 0.2s ease;
+        }
+        .status-badge.disconnected { background: rgba(239, 68, 68, 0.12); color: var(--red); border: 1px solid rgba(239, 68, 68, 0.25); }
+        .status-badge.connected { background: rgba(16, 185, 129, 0.12); color: var(--green); border: 1px solid rgba(16, 185, 129, 0.3); box-shadow: 0 0 12px rgba(16, 185, 129, 0.2); }
+        .pulse-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+        .connected .pulse-dot { animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.85); } }
+
+        /* Panels */
+        .panel {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            padding: 18px;
+            margin-bottom: 14px;
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+        }
+        .panel-title {
+            font-size: 0.72rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-dim);
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        /* Buttons */
+        .btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            width: 100%;
+            padding: 13px;
+            border-radius: 12px;
+            border: none;
+            font-weight: 700;
+            font-size: 0.88rem;
+            cursor: pointer;
+            color: white;
+            transition: transform 0.1s ease, filter 0.15s ease, box-shadow 0.15s ease;
+        }
+        .btn:active { transform: scale(0.97); }
+        .btn-connect { background: linear-gradient(135deg, #2563eb, #0284c7); box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35); }
+        .btn-auto { background: linear-gradient(135deg, #059669, #0284c7); box-shadow: 0 4px 14px rgba(5, 150, 105, 0.3); }
+        .btn-stop { background: linear-gradient(135deg, #dc2626, #b91c1c); box-shadow: 0 4px 14px rgba(220, 38, 38, 0.3); }
+        .btn-diag { background: linear-gradient(135deg, #7c3aed, #4f46e5); box-shadow: 0 4px 14px rgba(124, 58, 237, 0.3); }
+        .btn-sm { padding: 6px 11px; font-size: 0.72rem; border-radius: 8px; width: auto; }
+
+        /* Mode Selector Tabs */
+        .mode-tabs {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+        .mode-tab {
+            padding: 11px 6px;
+            border-radius: 12px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            font-weight: 700;
+            font-size: 0.78rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .mode-tab.active {
+            background: rgba(59, 130, 246, 0.15);
+            border-color: var(--blue);
+            color: #60a5fa;
+            box-shadow: 0 0 14px rgba(59, 130, 246, 0.2);
+        }
+        .mode-tab.tab-diag.active {
+            background: rgba(139, 92, 246, 0.15);
+            border-color: var(--purple);
+            color: #c084fc;
+            box-shadow: 0 0 14px rgba(139, 92, 246, 0.2);
+        }
+
+        /* DUAL SPEEDOMETER DASHBOARD */
+        .speedo-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+        .speedo-card {
+            background: rgba(7, 10, 18, 0.75);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 14px 10px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+        .speedo-card.left { border-top: 3px solid #06b6d4; }
+        .speedo-card.right { border-top: 3px solid #3b82f6; }
+        .speedo-title {
+            font-size: 0.68rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            font-weight: 800;
+            letter-spacing: 0.5px;
+        }
+        .speedo-gauge-wrap {
+            position: relative;
+            width: 100px;
+            height: 52px;
+            margin: 6px auto 0;
+            overflow: hidden;
+        }
+        .speedo-val {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1.6rem;
+            font-weight: 800;
+            line-height: 1;
+            margin-top: 4px;
+        }
+        .speedo-val.left-val { color: var(--cyan); text-shadow: 0 0 12px rgba(6, 182, 212, 0.35); }
+        .speedo-val.right-val { color: #60a5fa; text-shadow: 0 0 12px rgba(96, 165, 250, 0.35); }
+        .speedo-unit { font-size: 0.68rem; color: var(--text-dim); font-weight: 600; margin-top: 2px; }
+
+        /* Speed Balance Bar */
+        .balance-container {
+            background: rgba(7, 10, 18, 0.6);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 8px 12px;
+            margin-top: 8px;
+        }
+        .balance-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.65rem;
+            font-weight: 700;
+            color: var(--text-dim);
+            margin-bottom: 4px;
+        }
+        .balance-bar-bg {
+            height: 8px;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 99px;
+            position: relative;
+            overflow: hidden;
+        }
+        .balance-marker {
+            position: absolute;
+            top: 0;
+            left: 50%;
+            width: 14px;
+            height: 8px;
+            background: var(--amber);
+            border-radius: 99px;
+            transform: translateX(-50%);
+            transition: left 0.25s ease;
+            box-shadow: 0 0 8px var(--amber);
+        }
+
+        /* Telemetry Cards */
+        .tele-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .tele-card {
+            background: rgba(7, 10, 17, 0.6);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 10px;
+            text-align: center;
+        }
+        .tele-label { font-size: 0.65rem; color: var(--text-dim); text-transform: uppercase; font-weight: 800; }
+        .tele-val { font-family: 'JetBrains Mono', monospace; font-size: 1.15rem; font-weight: 700; color: var(--cyan); margin-top: 2px; }
+
+        /* RC D-Pad */
+        .dpad-container { display: flex; flex-direction: column; align-items: center; margin: 10px 0; }
+        .dpad { display: grid; grid-template-columns: repeat(3, 72px); grid-template-rows: repeat(3, 72px); gap: 10px; }
+        .dpad-btn {
+            background: rgba(30, 41, 59, 0.6);
+            border: 1px solid var(--border);
+            color: white;
+            border-radius: 14px;
+            font-size: 1.8rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.1s ease;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.25);
+        }
+        .dpad-btn:active {
+            background: rgba(59, 130, 246, 0.45);
+            border-color: var(--blue);
+            transform: scale(0.92);
+            box-shadow: 0 0 15px rgba(59, 130, 246, 0.4);
+        }
+        .btn-up { grid-column: 2; grid-row: 1; }
+        .btn-left { grid-column: 1; grid-row: 2; }
+        .btn-center { grid-column: 2; grid-row: 2; background: rgba(239, 68, 68, 0.2); border-color: rgba(239, 68, 68, 0.4); font-size: 0.85rem; font-weight: 800; color: #fca5a5; }
+        .btn-center:active { background: rgba(239, 68, 68, 0.5); }
+        .btn-right { grid-column: 3; grid-row: 2; }
+        .btn-down { grid-column: 2; grid-row: 3; }
+
+        /* Diagnostics Grid */
+        .diag-grid { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+        .diag-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 9px 12px;
+            background: rgba(10, 14, 24, 0.7);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            transition: border-color 0.2s ease, background 0.2s ease;
+        }
+        .diag-item.testing { border-color: var(--amber); background: rgba(245, 158, 11, 0.08); }
+        .diag-item.pass { border-color: rgba(16, 185, 129, 0.5); background: rgba(16, 185, 129, 0.08); }
+        .diag-item.fail { border-color: rgba(239, 68, 68, 0.5); background: rgba(239, 68, 68, 0.08); }
+
+        .diag-info { display: flex; align-items: center; gap: 10px; }
+        .diag-icon { font-size: 1.2rem; width: 26px; text-align: center; }
+        .diag-name { font-size: 0.8rem; font-weight: 600; color: var(--text); }
+        .diag-desc { font-size: 0.65rem; color: var(--text-dim); }
+
+        .diag-actions { display: flex; align-items: center; gap: 8px; }
+        .status-pill {
+            font-size: 0.68rem;
+            font-weight: 700;
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-family: 'JetBrains Mono', monospace;
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--text-dim);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .status-pill.pass { background: rgba(16, 185, 129, 0.2); color: #34d399; border-color: rgba(16, 185, 129, 0.4); }
+        .status-pill.fail { background: rgba(239, 68, 68, 0.2); color: #f87171; border-color: rgba(239, 68, 68, 0.4); }
+        .status-pill.testing { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border-color: rgba(245, 158, 11, 0.4); animation: pulse 1s infinite; }
+
+        /* Console log */
+        .diag-console {
+            background: #040508;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 10px;
+            padding: 10px;
+            margin-top: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.7rem;
+            color: #94a3b8;
+            max-height: 120px;
+            overflow-y: auto;
+            line-height: 1.5;
+        }
+        .log-entry { margin-bottom: 2px; }
+        .log-time { color: var(--text-dim); }
+        .log-pass { color: #34d399; }
+        .log-fail { color: #f87171; }
+        .log-warn { color: #fbbf24; }
+
+        /* Tuning / Config Rows */
+        .config-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .config-label-group { display: flex; flex-direction: column; }
+        .config-label { font-size: 0.78rem; font-weight: 600; }
+        .config-hint { font-size: 0.65rem; color: var(--text-dim); }
+        .config-num {
+            width: 72px;
+            background: rgba(0,0,0,0.5);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 6px;
+            color: white;
+            text-align: center;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            outline: none;
+        }
+
+        .toggle-sync {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 12px;
+            background: rgba(16, 185, 129, 0.08);
+            border: 1px solid rgba(16, 185, 129, 0.25);
+            border-radius: 12px;
+            margin-bottom: 12px;
+        }
+        .toggle-switch {
+            width: 44px;
+            height: 24px;
+            background: #334155;
+            border-radius: 99px;
+            position: relative;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .toggle-switch.on { background: var(--green); }
+        .toggle-knob {
+            width: 18px;
+            height: 18px;
+            background: white;
+            border-radius: 50%;
+            position: absolute;
+            top: 3px;
+            left: 3px;
+            transition: transform 0.2s;
+        }
+        .toggle-switch.on .toggle-knob { transform: translateX(20px); }
+
+        .tip-box {
+            background: rgba(59, 130, 246, 0.08);
+            border-left: 3px solid var(--blue);
+            border-radius: 0 8px 8px 0;
+            padding: 8px 12px;
+            font-size: 0.72rem;
+            color: #93c5fd;
+            margin-top: 10px;
+            line-height: 1.4;
+        }
+
+        .disabled-zone { opacity: 0.35; pointer-events: none; filter: grayscale(40%); transition: all 0.2s ease; }
+        .active-zone { opacity: 1; pointer-events: all; filter: none; }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+<div class="app">
+    <div class="header">
+        <h1>ROVER COMMAND & TELEMETRY</h1>
+        <p>Dual Wheel Speedometer • LM393 Encoders • Diagnostics</p>
+        <div id="statusBadge" class="status-badge disconnected">
+            <span class="pulse-dot"></span>
+            <span id="statusText">Disconnected</span>
+        </div>
+    </div>
+
+    <!-- Connection Panel -->
+    <div class="panel">
+        <button id="connectBtn" class="btn btn-connect">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11M12 2v20l5-5-5-5 5-5-5-5z"/></svg>
+            Connect to ESP32-Rover
+        </button>
+    </div>
+
+    <!-- Mode Selector Tabs -->
+    <div class="mode-tabs disabled-zone" id="modeTabs">
+        <div class="mode-tab active" id="tabRC" onclick="selectTab('rc')">🎮 RC Manual</div>
+        <div class="mode-tab" id="tabAuto" onclick="selectTab('auto')">🚀 Autonomous</div>
+        <div class="mode-tab tab-diag" id="tabDiag" onclick="selectTab('diag')">🛠️ Diagnostics</div>
+    </div>
+
+    <!-- DUAL WHEEL SPEEDOMETER DASHBOARD (Live Encoder Telemetry) -->
+    <div class="panel disabled-zone" id="speedoPanel">
+        <div class="panel-title">
+            <span>Dual Wheel Speedometer</span>
+            <span id="teleModeBadge" style="color:var(--cyan); font-family:'JetBrains Mono';">IDLE</span>
+        </div>
+        
+        <div class="speedo-grid">
+            <!-- Left Wheel Speedometer -->
+            <div class="speedo-card left">
+                <div class="speedo-title">Left Wheel (GPIO 34)</div>
+                <div class="speedo-val left-val" id="valSpeedL">0.0</div>
+                <div class="speedo-unit">cm / s</div>
+            </div>
+
+            <!-- Right Wheel Speedometer -->
+            <div class="speedo-card right">
+                <div class="speedo-title">Right Wheel (GPIO 35)</div>
+                <div class="speedo-val right-val" id="valSpeedR">0.0</div>
+                <div class="speedo-unit">cm / s</div>
+            </div>
+        </div>
+
+        <!-- Wheel Speed Balance Indicator -->
+        <div class="balance-container">
+            <div class="balance-labels">
+                <span>◀ Left Faster</span>
+                <span id="speedDiffText">Balanced (0.0 cm/s)</span>
+                <span>Right Faster ▶</span>
+            </div>
+            <div class="balance-bar-bg">
+                <div class="balance-marker" id="balanceMarker"></div>
+            </div>
+        </div>
+
+        <!-- Telemetry row: State & Front Sonar -->
+        <div class="tele-grid" style="margin-top: 10px;">
+            <div class="tele-card">
+                <div class="tele-label">Mode / State</div>
+                <div class="tele-val" id="tState" style="color:var(--amber); font-size:1rem;">IDLE</div>
+            </div>
+            <div class="tele-card">
+                <div class="tele-label">Front Sonar Dist</div>
+                <div class="tele-val" id="tDist">--</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 1. RC Manual Control View -->
+    <div id="viewRC" class="panel disabled-zone">
+        <div class="panel-title">Manual RC Navigation</div>
+        <div class="dpad-container">
+            <div class="dpad">
+                <div class="dpad-btn btn-up" id="btnFwd" title="Forward">▲</div>
+                <div class="dpad-btn btn-left" id="btnLeft" title="Turn Left">◀</div>
+                <div class="dpad-btn btn-center" id="btnCenter" title="Stop">STOP</div>
+                <div class="dpad-btn btn-right" id="btnRight" title="Turn Right">▶</div>
+                <div class="dpad-btn btn-down" id="btnRev" title="Reverse">▼</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 2. Autonomous Mode View -->
+    <div id="viewAuto" class="panel disabled-zone hidden">
+        <div class="panel-title">
+            <span>Free-Roam Obstacle Avoidance</span>
+            <span style="font-size:0.65rem; color:var(--cyan);">DYNAMIC ROAM</span>
+        </div>
+        
+        <div class="tip-box" style="margin-bottom:12px; margin-top:0;">
+            🧭 <strong>Free-Roam Mode:</strong> The rover cruises freely without needing to keep a straight line. Whenever an obstacle is detected, it halts, scans left and right with its ultrasonic radar, turns toward the clearest open space, and continues roaming!
+        </div>
+
+        <button id="autoStartBtn" class="btn btn-auto" style="margin-bottom: 10px;">
+            🚀 Start Free-Roam Obstacle Avoidance
+        </button>
+        <button id="autoStopBtn" class="btn btn-stop">
+            🛑 Emergency Stop
+        </button>
+
+        <div style="margin-top:14px; padding-top:10px; border-top:1px solid rgba(255,255,255,0.06);">
+            <div class="config-row">
+                <div class="config-label-group">
+                    <span class="config-label">Obstacle Trigger Dist (cm)</span>
+                    <span class="config-hint">Distance to brake & scan radar</span>
+                </div>
+                <input type="number" class="config-num" id="cfgAutoDist" value="25" min="15" max="60" onchange="document.getElementById('cfgDist').value=this.value; sendCfg('DANGER_DIST', this.value);">
+            </div>
+            <div class="config-row">
+                <div class="config-label-group">
+                    <span class="config-label">Roaming Speed (PWM)</span>
+                    <span class="config-hint">Cruising speed (80-255)</span>
+                </div>
+                <input type="number" class="config-num" id="cfgAutoSpd" value="180" min="100" max="255" onchange="document.getElementById('cfgSpd').value=this.value; sendCfg('SPEED', this.value);">
+            </div>
+        </div>
+    </div>
+
+    <!-- 3. Component Health Diagnostics View -->
+    <div id="viewDiag" class="panel disabled-zone hidden">
+        <div class="panel-title">
+            <span>Hardware Health & Sensor Check</span>
+            <span style="font-size:0.65rem; color:var(--purple);">SELF-TEST</span>
+        </div>
+        
+        <button id="btnRunFullDiag" class="btn btn-diag" onclick="runAutoDiag()">
+            ▶ Run Full Auto Diagnostics
+        </button>
+
+        <div class="diag-grid">
+            <!-- 1. Left Wheel Encoder (GPIO 34) -->
+            <div class="diag-item" id="diagCard_ENCL">
+                <div class="diag-info">
+                    <div class="diag-icon">⚡</div>
+                    <div>
+                        <div class="diag-name">Left Encoder (LM393)</div>
+                        <div class="diag-desc">GPIO 34 Interrupt Ticks</div>
+                    </div>
+                </div>
+                <div class="diag-actions">
+                    <span class="status-pill" id="pill_ENCL">UNTESTED</span>
+                    <button class="btn btn-diag btn-sm" onclick="sendCmd('TEST_MOTL')">Test</button>
+                </div>
+            </div>
+
+            <!-- 2. Right Wheel Encoder (GPIO 35) -->
+            <div class="diag-item" id="diagCard_ENCR">
+                <div class="diag-info">
+                    <div class="diag-icon">⚡</div>
+                    <div>
+                        <div class="diag-name">Right Encoder (LM393)</div>
+                        <div class="diag-desc">GPIO 35 Interrupt Ticks</div>
+                    </div>
+                </div>
+                <div class="diag-actions">
+                    <span class="status-pill" id="pill_ENCR">UNTESTED</span>
+                    <button class="btn btn-diag btn-sm" onclick="sendCmd('TEST_MOTR')">Test</button>
+                </div>
+            </div>
+
+            <!-- 3. Left Motor -->
+            <div class="diag-item" id="diagCard_MOTL">
+                <div class="diag-info">
+                    <div class="diag-icon">⚙️</div>
+                    <div>
+                        <div class="diag-name">Left Motor (Ch A)</div>
+                        <div class="diag-desc">ENA:13, IN1:12, IN2:14</div>
+                    </div>
+                </div>
+                <div class="diag-actions">
+                    <span class="status-pill" id="pill_MOTL">UNTESTED</span>
+                    <button class="btn btn-diag btn-sm" onclick="sendCmd('TEST_MOTL')">Spin 0.45s</button>
+                </div>
+            </div>
+
+            <!-- 4. Right Motor -->
+            <div class="diag-item" id="diagCard_MOTR">
+                <div class="diag-info">
+                    <div class="diag-icon">⚙️</div>
+                    <div>
+                        <div class="diag-name">Right Motor (Ch B)</div>
+                        <div class="diag-desc">ENB:25, IN3:27, IN4:26</div>
+                    </div>
+                </div>
+                <div class="diag-actions">
+                    <span class="status-pill" id="pill_MOTR">UNTESTED</span>
+                    <button class="btn btn-diag btn-sm" onclick="sendCmd('TEST_MOTR')">Spin 0.45s</button>
+                </div>
+            </div>
+
+            <!-- 5. Ultrasonic Sonar -->
+            <div class="diag-item" id="diagCard_SONAR">
+                <div class="diag-info">
+                    <div class="diag-icon">📏</div>
+                    <div>
+                        <div class="diag-name">HC-SR04 Ultrasonic</div>
+                        <div class="diag-desc">Trig 5, Echo 18</div>
+                    </div>
+                </div>
+                <div class="diag-actions">
+                    <span class="status-pill" id="pill_SONAR">UNTESTED</span>
+                    <button class="btn btn-diag btn-sm" onclick="sendCmd('TEST_SONAR')">Ping</button>
+                </div>
+            </div>
+
+            <!-- 6. Radar Servo -->
+            <div class="diag-item" id="diagCard_SERVO">
+                <div class="diag-info">
+                    <div class="diag-icon">🔄</div>
+                    <div>
+                        <div class="diag-name">Radar Servo</div>
+                        <div class="diag-desc">GPIO 19 (30° - 150°)</div>
+                    </div>
+                </div>
+                <div class="diag-actions">
+                    <span class="status-pill" id="pill_SERVO">UNTESTED</span>
+                    <button class="btn btn-diag btn-sm" onclick="sendCmd('TEST_SERVO')">Sweep</button>
+                </div>
+            </div>
+
+            <!-- 7. Buzzer -->
+            <div class="diag-item" id="diagCard_BUZZ">
+                <div class="diag-info">
+                    <div class="diag-icon">🔔</div>
+                    <div>
+                        <div class="diag-name">Piezo Buzzer</div>
+                        <div class="diag-desc">GPIO 4 Alert Tone</div>
+                    </div>
+                </div>
+                <div class="diag-actions">
+                    <span class="status-pill" id="pill_BUZZ">UNTESTED</span>
+                    <button class="btn btn-diag btn-sm" onclick="sendCmd('TEST_BUZZ')">Beep</button>
+                </div>
+            </div>
+
+            <!-- 8. LCD -->
+            <div class="diag-item" id="diagCard_LCD">
+                <div class="diag-info">
+                    <div class="diag-icon">📺</div>
+                    <div>
+                        <div class="diag-name">I2C LCD 16x2</div>
+                        <div class="diag-desc">Bus Addr: 0x27 / 0x3F</div>
+                    </div>
+                </div>
+                <div class="diag-actions">
+                    <span class="status-pill" id="pill_LCD">UNTESTED</span>
+                    <button class="btn btn-diag btn-sm" onclick="sendCmd('TEST_LCD')">Test</button>
+                </div>
+            </div>
+
+            <!-- 9. Compass Module -->
+            <div class="diag-item" id="diagCard_COMPASS">
+                <div class="diag-info">
+                    <div class="diag-icon">🧭</div>
+                    <div>
+                        <div class="diag-name">Compass Module</div>
+                        <div class="diag-desc">HMC5883L (0x1E) / QMC5883L (0x0D)</div>
+                    </div>
+                </div>
+                <div class="diag-actions">
+                    <span class="status-pill" id="pill_COMPASS">UNTESTED</span>
+                    <button class="btn btn-diag btn-sm" onclick="">Read</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="diag-console" id="diagConsole">
+            <div class="log-entry log-time">// Diagnostics & Encoder Console Ready</div>
+        </div>
+    </div>
+
+    <!-- Tuning & Calibration Panel -->
+    <div class="panel disabled-zone" id="tunePanel">
+        <div class="panel-title">Straight-Line Calibration & Speed Tuning</div>
+        
+        <!-- Closed-Loop Encoder Sync Feature -->
+        <div class="toggle-sync">
+            <div>
+                <div style="font-size:0.8rem; font-weight:700; color:#34d399;">⚡ Closed-Loop Speed Sync</div>
+                <div style="font-size:0.65rem; color:var(--text-dim);">Auto-balances motors using live encoder RPM</div>
+            </div>
+            <div class="toggle-switch" id="syncSwitch" onclick="toggleSync()">
+                <div class="toggle-knob"></div>
+            </div>
+        </div>
+
+        <!-- Motor Trim Calibration -->
+        <div class="config-row">
+            <div class="config-label-group">
+                <span class="config-label">Left Motor Trim (%)</span>
+                <span class="config-hint">PWM scaling for left side</span>
+            </div>
+            <input type="number" class="config-num" id="cfgTrimL" value="100" min="40" max="100">
+        </div>
+        <div class="config-row">
+            <div class="config-label-group">
+                <span class="config-label">Right Motor Trim (%)</span>
+                <span class="config-hint">PWM scaling for right side</span>
+            </div>
+            <input type="number" class="config-num" id="cfgTrimR" value="100" min="40" max="100">
+        </div>
+        
+        <div class="tip-box">
+            💡 <strong>Speedometer Tip:</strong> Check the <em>Left</em> vs <em>Right</em> speedometers above while driving forward. If Right shows 22 cm/s and Left shows 18 cm/s, reduce <em>Right Motor Trim</em> until both values match!
+        </div>
+
+        <div class="config-row" style="margin-top:10px;">
+            <div class="config-label-group">
+                <span class="config-label">Drive Speed (PWM 0-255)</span>
+            </div>
+            <input type="number" class="config-num" id="cfgSpd" value="180" min="80" max="255">
+        </div>
+        <div class="config-row">
+            <div class="config-label-group">
+                <span class="config-label">Turn Speed (PWM 0-255)</span>
+            </div>
+            <input type="number" class="config-num" id="cfgTrn" value="150" min="80" max="255">
+        </div>
+        <div class="config-row">
+            <div class="config-label-group">
+                <span class="config-label">90° Turn Time (ms)</span>
+            </div>
+            <input type="number" class="config-num" id="cfgTime" value="500" min="200" max="2000" step="50">
+        </div>
+        <div class="config-row">
+            <div class="config-label-group">
+                <span class="config-label">Danger Obstacle Dist (cm)</span>
+            </div>
+            <input type="number" class="config-num" id="cfgDist" value="25" min="10" max="80">
+        </div>
+    </div>
+</div>
+
+<script>
+const SERVICE_UUID        = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+const CHAR_TELEMETRY_UUID = "d1a7a81e-5b0b-4f3e-9c1a-1a2b3c4d5e6f";
+const CHAR_CONFIG_UUID    = "e2b8b92f-6c1c-5a4f-ad2b-2b3c4d5e6f70";
+
+let bleDevice, configChar, telemetryChar;
+let isSyncOn = false;
+
+const STATES = ['IDLE', 'MANUAL RC', 'AUTO FORWARD', 'BYPASSING OBSTACLE', 'SELF-TEST DIAGNOSTICS'];
+
+function logMsg(msg, type='normal') {
+    const box = document.getElementById('diagConsole');
+    if (!box) return;
+    const time = new Date().toLocaleTimeString();
+    const entry = document.createElement('div');
+    entry.className = 'log-entry';
+    let typeClass = '';
+    if(type === 'pass') typeClass = 'log-pass';
+    else if(type === 'fail') typeClass = 'log-fail';
+    else if(type === 'warn') typeClass = 'log-warn';
+    entry.innerHTML = `<span class="log-time">[${time}]</span> <span class="${typeClass}">${msg}</span>`;
+    box.appendChild(entry);
+    box.scrollTop = box.scrollHeight;
+}
+
+// Connect BLE
+document.getElementById('connectBtn').addEventListener('click', async () => {
+    try {
+        logMsg("Scanning for BLE device 'ESP32-Rover'...");
+        bleDevice = await navigator.bluetooth.requestDevice({
+            filters: [{ services: [SERVICE_UUID] }]
+        });
+        
+        bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+        logMsg("Connecting to GATT Server...");
+        const server = await bleDevice.gatt.connect();
+        
+        logMsg("Discovering Primary Service...");
+        const service = await server.getPrimaryService(SERVICE_UUID);
+        
+        configChar = await service.getCharacteristic(CHAR_CONFIG_UUID);
+        telemetryChar = await service.getCharacteristic(CHAR_TELEMETRY_UUID);
+        
+        await telemetryChar.startNotifications();
+        telemetryChar.addEventListener('characteristicvaluechanged', handleTelemetry);
+
+        document.getElementById('statusBadge').className = 'status-badge connected';
+        document.getElementById('statusText').textContent = 'Connected';
+        document.getElementById('connectBtn').textContent = 'Connected to Rover';
+        document.getElementById('connectBtn').style.background = 'linear-gradient(135deg, #059669, #0284c7)';
+        
+        document.querySelectorAll('.disabled-zone').forEach(el => {
+            el.classList.remove('disabled-zone');
+            el.classList.add('active-zone');
+        });
+        
+        logMsg("BLE Connected! Encoders and Telemetry active.", 'pass');
+    } catch(e) {
+        logMsg("Connection error: " + e.message, 'fail');
+        alert("Connection failed: " + e.message);
+    }
+});
+
+function onDisconnected() {
+    document.getElementById('statusBadge').className = 'status-badge disconnected';
+    document.getElementById('statusText').textContent = 'Disconnected';
+    document.getElementById('connectBtn').textContent = 'Connect to ESP32-Rover';
+    document.getElementById('connectBtn').style.background = '';
+    document.querySelectorAll('.active-zone').forEach(el => {
+        el.classList.add('disabled-zone');
+        el.classList.remove('active-zone');
+    });
+    logMsg("BLE Disconnected", 'warn');
+}
+
+function handleTelemetry(e) {
+    const raw = new TextDecoder().decode(e.target.value);
+    
+    // Check if diagnostic notification
+    if (raw.startsWith("DIAG:")) {
+        const parts = raw.split(':');
+        const comp = parts[1];
+        const status = parts.slice(2).join(':');
+        updateComponentUI(comp, status);
+        return;
+    }
+
+    // Telemetry: state,dist,speedL,speedR
+    const parts = raw.split(',');
+    const stateIdx = parseInt(parts[0]);
+    const dist = parseFloat(parts[1]);
+    const speedL = parts[2] !== undefined ? parseFloat(parts[2]) : 0.0;
+    const speedR = parts[3] !== undefined ? parseFloat(parts[3]) : 0.0;
+
+    document.getElementById('tState').textContent = STATES[stateIdx] || 'UNKNOWN';
+    document.getElementById('teleModeBadge').textContent = STATES[stateIdx] || 'UNKNOWN';
+    
+    if (!isNaN(dist)) {
+        document.getElementById('tDist').textContent = dist >= 990 ? '> 400 cm' : dist.toFixed(1) + ' cm';
+    }
+
+    // Update Speedometers
+    if (!isNaN(speedL)) document.getElementById('valSpeedL').textContent = speedL.toFixed(1);
+    if (!isNaN(speedR)) document.getElementById('valSpeedR').textContent = speedR.toFixed(1);
+
+    // Update Balance Marker (-50% to +50% range)
+    const diff = speedR - speedL;
+    const diffLabel = document.getElementById('speedDiffText');
+    const marker = document.getElementById('balanceMarker');
+    
+    if (Math.abs(diff) < 0.5) {
+        diffLabel.textContent = "Balanced (±0)";
+        diffLabel.style.color = "var(--green)";
+        marker.style.left = "50%";
+    } else {
+        diffLabel.textContent = `${Math.abs(diff).toFixed(1)} cm/s diff`;
+        diffLabel.style.color = "var(--amber)";
+        // Clamp offset between 10% and 90%
+        let offset = 50 + (diff * 2.5);
+        offset = Math.max(10, Math.min(90, offset));
+        marker.style.left = `${offset}%`;
+    }
+}
+
+function updateComponentUI(comp, status) {
+    const pill = document.getElementById(`pill_${comp}`);
+    const card = document.getElementById(`diagCard_${comp}`);
+    
+    if (comp === "SYS" || comp === "ALL") {
+        logMsg(`[System] Diagnostics: ${status}`, status === 'COMPLETE' ? 'pass' : 'normal');
+        if (status === "COMPLETE") {
+            const btn = document.getElementById('btnRunFullDiag');
+            btn.textContent = '▶ Run Full Auto Diagnostics';
+            btn.style.filter = '';
+        }
+        return;
+    }
+
+    if (!pill) return;
+
+    pill.className = 'status-pill';
+    if (card) card.className = 'diag-item';
+
+    if (status.includes("PASS") || status === "OK") {
+        pill.classList.add('pass');
+        pill.textContent = status;
+        if (card) card.classList.add('pass');
+        logMsg(`${comp}: ${status}`, 'pass');
+    } else if (status.includes("FAIL") || status === "NO ACK") {
+        pill.classList.add('fail');
+        pill.textContent = status;
+        if (card) card.classList.add('fail');
+        logMsg(`${comp}: ${status}`, 'fail');
+    } else {
+        pill.classList.add('testing');
+        pill.textContent = status;
+        if (card) card.classList.add('testing');
+        logMsg(`${comp}: ${status}`, 'warn');
+    }
+}
+
+async function sendCmd(cmd) {
+    if(!configChar) return;
+    try {
+        await configChar.writeValue(new TextEncoder().encode(`CMD:${cmd}`));
+    } catch(e) {
+        logMsg("CMD Send Failed: " + e.message, 'fail');
+    }
+}
+
+async function sendCfg(key, val) {
+    if(!configChar) return;
+    try {
+        await configChar.writeValue(new TextEncoder().encode(`CFG:${key}:${val}`));
+        logMsg(`Config updated: ${key} = ${val}`);
+    } catch(e) {
+        logMsg("CFG Send Failed: " + e.message, 'fail');
+    }
+}
+
+function toggleSync() {
+    isSyncOn = !isSyncOn;
+    document.getElementById('syncSwitch').classList.toggle('on', isSyncOn);
+    sendCfg('SYNC', isSyncOn ? 1 : 0);
+    logMsg(`Auto-Straight Closed Loop: ${isSyncOn ? 'ENABLED' : 'DISABLED'}`, isSyncOn ? 'pass' : 'warn');
+}
+
+// Mode Tab Switching
+function selectTab(tab) {
+    document.getElementById('tabRC').classList.toggle('active', tab === 'rc');
+    document.getElementById('tabAuto').classList.toggle('active', tab === 'auto');
+    document.getElementById('tabDiag').classList.toggle('active', tab === 'diag');
+
+    document.getElementById('viewRC').classList.toggle('hidden', tab !== 'rc');
+    document.getElementById('viewAuto').classList.toggle('hidden', tab !== 'auto');
+    document.getElementById('viewDiag').classList.toggle('hidden', tab !== 'diag');
+
+    if (tab === 'diag') {
+        sendCmd('MODE_DIAG');
+    } else if (tab === 'rc') {
+        sendCmd('MODE_MANUAL');
+    }
+}
+
+// Full Auto Diagnostics Runner
+function runAutoDiag() {
+    const btn = document.getElementById('btnRunFullDiag');
+    btn.textContent = '⏳ Running Hardware Diagnostics...';
+    btn.style.filter = 'brightness(1.2)';
+    
+    // Reset all status pills to testing state
+    ['ENCL', 'ENCR', 'MOTL', 'MOTR', 'SONAR', 'SERVO', 'BUZZ', 'LCD'].forEach(c => {
+        const p = document.getElementById(`pill_${c}`);
+        if(p) { p.className = 'status-pill testing'; p.textContent = 'WAITING'; }
+        const card = document.getElementById(`diagCard_${c}`);
+        if(card) card.className = 'diag-item';
+    });
+
+    logMsg("Triggering full automated self-test on rover...", 'warn');
+    sendCmd('TEST_AUTO');
+}
+
+// Autonomous Mode Buttons
+document.getElementById('autoStartBtn').addEventListener('click', () => sendCmd('AUTO'));
+document.getElementById('autoStopBtn').addEventListener('click', () => sendCmd('STOP'));
+
+// RC Buttons (Touch / Pointer support)
+const setupRC = (id, cmd) => {
+    const el = document.getElementById(id);
+    if(!el) return;
+    el.addEventListener('pointerdown', (e) => { e.preventDefault(); sendCmd(cmd); });
+    el.addEventListener('pointerup', (e) => { e.preventDefault(); sendCmd('STOP'); });
+    el.addEventListener('pointerleave', (e) => { e.preventDefault(); sendCmd('STOP'); });
+};
+
+setupRC('btnFwd', 'FWD');
+setupRC('btnRev', 'REV');
+setupRC('btnLeft', 'LEFT');
+setupRC('btnRight', 'RIGHT');
+document.getElementById('btnCenter').addEventListener('click', () => sendCmd('STOP'));
+
+// Config Inputs
+document.getElementById('cfgTrimL').addEventListener('change', (e) => sendCfg('TRIM_L', e.target.value));
+document.getElementById('cfgTrimR').addEventListener('change', (e) => sendCfg('TRIM_R', e.target.value));
+document.getElementById('cfgSpd').addEventListener('change', (e) => sendCfg('SPEED', e.target.value));
+document.getElementById('cfgTrn').addEventListener('change', (e) => sendCfg('TURN_SPEED', e.target.value));
+document.getElementById('cfgTime').addEventListener('change', (e) => sendCfg('TURN_TIME', e.target.value));
+document.getElementById('cfgDist').addEventListener('change', (e) => sendCfg('DANGER_DIST', e.target.value));
+</script>
+</body>
+</html>
+
